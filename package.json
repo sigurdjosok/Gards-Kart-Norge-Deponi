@@ -1,5 +1,5 @@
 {
-  "name": "storfe-kart",
+  "name": "gards-kart-norge-deponi",
   "version": "1.0.0",
   "private": true,
   "dependencies": {
@@ -7,5 +7,9 @@
     "react-dom": "^18.2.0",
     "react-leaflet": "^4.2.1",
     "leaflet": "^1.9.4"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
   }
 }
