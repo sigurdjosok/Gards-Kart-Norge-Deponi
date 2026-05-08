@@ -1,23 +1,19 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
 const NORWAY_CENTER = [64.5, 11.5];
 
-// 🐄 storfe ikon
 const cowIcon = L.divIcon({
   html: `<div style="background:#bbf7d0;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;">🐄</div>`,
   iconSize: [30, 30],
 });
 
-// 🏭 TINE ikon (annen farge)
 const plantIcon = L.divIcon({
   html: `<div style="background:#93c5fd;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;">🏭</div>`,
   iconSize: [32, 32],
 });
-
-// ✅ HARDKODET TINE ANLEGG (kan utvides senere)
 
 const tinePlants = [
   { name: "TINE Alta", lat: 69.97, lon: 23.29 },
@@ -43,80 +39,146 @@ const tinePlants = [
   { name: "TINE Verdal", lat: 63.79, lon: 11.47 },
   { name: "TINE Vik i Sogn", lat: 61.09, lon: 6.57 },
   { name: "TINE Ørsta", lat: 62.20, lon: 6.13 },
-  { name: "TINE Ålesund", lat: 62.47, lon: 6.15 }
+  { name: "TINE Ålesund", lat: 62.47, lon: 6.15 },
 ];
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export default function NorgeKart() {
   const [items, setItems] = useState([]);
 
-  useEffect(() => {
-  const CACHE_KEY = "storfeData_v1";
-  const cached = localStorage.getItem(CACHE_KEY);
+  const GEO_CACHE_KEY = "storfe_geoCache_v1";
 
-  if (cached) {
+  const geoCache = useMemo(() => {
     try {
-      const parsed = JSON.parse(cached);
-
-      // ✅ valider cache (viktig!)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        setItems(parsed);
-        return;
-      }
-    } catch (e) {
-      console.log("Cache error, reloading data");
+      const raw = localStorage.getItem(GEO_CACHE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
     }
-  }
+  }, []);
 
-  // ✅ fallback: last CSV
-  fetch("/storfe.csv", { cache: "force-cache" })
-    .then((r) => r.text())
-    .then((text) => {
+  useEffect(() => {
+    let cancelled = false;
+
+    const saveCache = (obj) => {
+      try {
+        localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(obj));
+      } catch {
+        // localStorage kan bli full, da må vi leve uten cache
+      }
+    };
+
+    const run = async () => {
+      const text = await fetch("/storfe.csv", { cache: "no-store" }).then((r) => r.text());
+
       const lines = text.split(/\r?\n/).filter(Boolean);
       const rows = lines.slice(1);
 
-      const data = rows
+      // Start med rådata uten coords
+      const base = rows
         .map((line) => {
           const parts = line.split(";");
+          const id = (parts[0] || "").trim();
+          const name = (parts[1] || "").trim();
+          const address = (parts.slice(2).join(";") || "").trim();
 
-          const id = parts[0];
-          const name = parts[1];
-          const address = parts[2];
-          const lat = parseFloat(parts[3]);
-          const lon = parseFloat(parts[4]);
+          if (!id || !name || !address) return null;
 
-          if (!lat || !lon) return null;
+          const cached = geoCache[address];
+          if (cached && cached.found && Number.isFinite(cached.lat) && Number.isFinite(cached.lon)) {
+            return { id, name, address, lat: cached.lat, lon: cached.lon, fromCache: true };
+          }
 
-          return { id, name, address, lat, lon };
+          return { id, name, address, lat: null, lon: null, fromCache: false };
         })
         .filter(Boolean);
 
-      setItems(data);
+      if (cancelled) return;
 
-      // ✅ lagre kun hvis vi faktisk har data
-      if (data.length > 0) {
-        localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+      setItems(base);
+
+      // Nå, geokod kun de som mangler coords
+      const cacheObj = { ...geoCache };
+
+      for (let i = 0; i < base.length; i++) {
+        if (cancelled) return;
+
+        const it = base[i];
+        if (it.lat != null && it.lon != null) continue;
+
+        // Hvis vi allerede har forsøkt og fått found:false, hopp
+        const cached = cacheObj[it.address];
+        if (cached && cached.found === false) continue;
+
+        try {
+          const resp = await fetch(`/api/geocode?address=${encodeURIComponent(it.address)}`, {
+            cache: "no-store",
+          });
+
+          if (!resp.ok) {
+            // Backoff litt hvis upstream blir cranky
+            await sleep(1500);
+            continue;
+          }
+
+          const geo = await resp.json();
+
+          if (geo && geo.ok && geo.found && Number.isFinite(geo.lat) && Number.isFinite(geo.lon)) {
+            it.lat = geo.lat;
+            it.lon = geo.lon;
+
+            cacheObj[it.address] = { found: true, lat: geo.lat, lon: geo.lon };
+
+            // Oppdater UI litt underveis
+            if (i % 20 === 0) setItems([...base]);
+
+            // Lagre cache gradvis
+            if (i % 50 === 0) saveCache(cacheObj);
+          } else {
+            cacheObj[it.address] = { found: false };
+            if (i % 50 === 0) saveCache(cacheObj);
+          }
+
+          // Viktig, hold deg nede på request rate [1](https://operations.osmfoundation.org/policies/nominatim/)
+          await sleep(1100);
+        } catch {
+          await sleep(1500);
+        }
       }
-    });
-}, []);
-  
+
+      if (cancelled) return;
+
+      // Siste flush
+      saveCache(cacheObj);
+      setItems([...base]);
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [geoCache]);
+
   return (
     <MapContainer center={NORWAY_CENTER} zoom={4} style={{ height: "100vh" }}>
-      <TileLayer
-        attribution="© OpenStreetMap"
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
+      <TileLayer attribution="© OpenStreetMap" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
-      {/* 🐄 GÅRDER */}
-      {items.map((it) => (
-        <Marker key={it.id} position={[it.lat, it.lon]} icon={cowIcon}>
-          <Popup>
-            <b>{it.name}</b>
-            <br />
-            {it.address}
-          </Popup>
-        </Marker>
-      ))}
+      {/* 🐄 GÅRDER, vis kun de som har coords */}
+      {items
+        .filter((it) => it.lat != null && it.lon != null)
+        .map((it) => (
+          <Marker key={it.id} position={[it.lat, it.lon]} icon={cowIcon}>
+            <Popup>
+              <b>{it.name}</b>
+              <br />
+              {it.address}
+              <br />
+              {it.fromCache ? "cached" : "new"}
+            </Popup>
+          </Marker>
+        ))}
 
       {/* 🏭 TINE ANLEGG */}
       {tinePlants.map((plant, i) => (
