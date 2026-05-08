@@ -23,7 +23,9 @@ export default function NorgeKart() {
 
         const data = await Promise.all(
           rows.map(async (r) => {
-            const [name, address] = r.split(",");
+           const parts = r.split(";");
+              const name = parts[1];
+              const address = parts[2];
             if (!name || !address) return null;
 
             const res = await fetch(
