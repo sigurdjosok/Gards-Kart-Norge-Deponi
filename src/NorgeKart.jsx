@@ -51,31 +51,43 @@ export default function NorgeKart() {
   const [items, setItems] = useState([]);
 
   useEffect(() => {
-    fetch("/storfe.csv")
-      .then((r) => r.text())
-      .then((text) => {
-        const lines = text.split(/\r?\n/).filter(Boolean);
-        const rows = lines.slice(1);
+  const cached = localStorage.getItem("storfeData");
 
-        const data = rows
-          .map((line) => {
-            const parts = line.split(";");
+  // ✅ Hvis cache finnes → bruk den
+  if (cached) {
+    setItems(JSON.parse(cached));
+    return;
+  }
 
-            const id = parts[0];
-            const name = parts[1];
-            const address = parts[2];
-            const lat = parseFloat(parts[3]);
-            const lon = parseFloat(parts[4]);
+  // ❌ Hvis ikke → last fra CSV
+  fetch("/storfe.csv", { cache: "force-cache" })
+    .then((r) => r.text())
+    .then((text) => {
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      const rows = lines.slice(1);
 
-            if (!lat || !lon) return null;
+      const data = rows
+        .map((line) => {
+          const parts = line.split(";");
 
-            return { id, name, address, lat, lon };
-          })
-          .filter(Boolean);
+          const id = parts[0];
+          const name = parts[1];
+          const address = parts[2];
+          const lat = parseFloat(parts[3]);
+          const lon = parseFloat(parts[4]);
 
-        setItems(data);
-      });
-  }, []);
+          if (!lat || !lon) return null;
+
+          return { id, name, address, lat, lon };
+        })
+        .filter(Boolean);
+
+      setItems(data);
+
+      // ✅ Lagre i cache
+      localStorage.setItem("storfeData", JSON.stringify(data));
+    });
+}, []);
 
   return (
     <MapContainer center={NORWAY_CENTER} zoom={4} style={{ height: "100vh" }}>
