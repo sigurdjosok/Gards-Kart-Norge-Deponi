@@ -51,15 +51,24 @@ export default function NorgeKart() {
   const [items, setItems] = useState([]);
 
   useEffect(() => {
-  const cached = localStorage.getItem("storfeData");
+  const CACHE_KEY = "storfeData_v1";
+  const cached = localStorage.getItem(CACHE_KEY);
 
-  // ✅ Hvis cache finnes → bruk den
   if (cached) {
-    setItems(JSON.parse(cached));
-    return;
+    try {
+      const parsed = JSON.parse(cached);
+
+      // ✅ valider cache (viktig!)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        setItems(parsed);
+        return;
+      }
+    } catch (e) {
+      console.log("Cache error, reloading data");
+    }
   }
 
-  // ❌ Hvis ikke → last fra CSV
+  // ✅ fallback: last CSV
   fetch("/storfe.csv", { cache: "force-cache" })
     .then((r) => r.text())
     .then((text) => {
@@ -84,11 +93,13 @@ export default function NorgeKart() {
 
       setItems(data);
 
-      // ✅ Lagre i cache
-      localStorage.setItem("storfeData", JSON.stringify(data));
+      // ✅ lagre kun hvis vi faktisk har data
+      if (data.length > 0) {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+      }
     });
 }, []);
-
+  
   return (
     <MapContainer center={NORWAY_CENTER} zoom={4} style={{ height: "100vh" }}>
       <TileLayer
