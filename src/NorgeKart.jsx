@@ -5,47 +5,76 @@ import "leaflet/dist/leaflet.css";
 
 const NORWAY_CENTER = [64.5, 11.5];
 
-function icon() {
-  return L.divIcon({
-    html: `<div style="background:#bbf7d0;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;">🐄</div>`,
-    iconSize: [30, 30],
-  });
-}
+const cowIcon = L.divIcon({
+  html: `<div style="background:#bbf7d0;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;">🐄</div>`,
+  iconSize: [30, 30],
+});
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export default function NorgeKart() {
   const [items, setItems] = useState([]);
 
   useEffect(() => {
-    fetch("/storfe.csv")
-      .then((r) => r.text())
-      .then(async (text) => {
-        const rows = text.split("\n").slice(1);
+    const run = async () => {
+      const text = await fetch("/storfe.csv").then((r) => r.text());
 
-        const data = await Promise.all(
-          rows.map(async (r) => {
-           const parts = r.split(";");
-              const name = parts[1];
-              const address = parts[2];
-            if (!name || !address) return null;
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      const rows = lines.slice(1); // hopper over header
 
-            const res = await fetch(
-              `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`
-            );
-            const geo = await res.json();
+      const out = [];
 
-            if (!geo.length) return null;
+      // DEBUG, start med en begrensning så vi ser punkter raskt
+      const MAX = 150;
 
-            return {
-              name,
-              address,
-              lat: parseFloat(geo[0].lat),
-              lon: parseFloat(geo[0].lon),
-            };
-          })
-        );
+      for (let idx = 0; idx < rows.length && out.length < MAX; idx++) {
+        const line = rows[idx];
 
-        setItems(data.filter(Boolean));
-      });
+        // CSV er id;name;address og address kan inneholde komma
+        const parts = line.split(";");
+        const id = (parts[0] || "").trim();
+        const name = (parts[1] || "").trim();
+        const address = (parts.slice(2).join(";") || "").trim();
+
+        if (!name || !address) continue;
+
+        try {
+          const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(
+            address
+          )}`;
+
+          const res = await fetch(url);
+          if (!res.ok) {
+            // typisk 429, 403, 502 når du blir begrenset
+            continue;
+          }
+
+          const geo = await res.json();
+          if (!geo || !geo.length) continue;
+
+          out.push({
+            id,
+            name,
+            address,
+            lat: parseFloat(geo[0].lat),
+            lon: parseFloat(geo[0].lon),
+          });
+
+          // oppdater litt underveis så du ser punkter dukke opp
+          if (out.length % 10 === 0) setItems([...out]);
+
+          // viktig, pause mellom kall
+          await sleep(1100);
+        } catch (e) {
+          // ignorer enkeltfeil, ellers blir alt tomt
+          continue;
+        }
+      }
+
+      setItems(out);
+    };
+
+    run();
   }, []);
 
   return (
@@ -56,7 +85,7 @@ export default function NorgeKart() {
       />
 
       {items.map((it, i) => (
-        <Marker key={i} position={[it.lat, it.lon]} icon={icon()}>
+        <Marker key={it.id || i} position={[it.lat, it.lon]} icon={cowIcon}>
           <Popup>
             <b>{it.name}</b>
             <br />
